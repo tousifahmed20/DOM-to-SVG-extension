@@ -1,0 +1,291 @@
+/* ============================================================
+   DOM → SVG Exporter — Popup Stylesheet
+   ============================================================ */
+
+:root {
+  --bg: #0f0f11;
+  --surface: #1a1a1f;
+  --border: #2a2a35;
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --text: #e8e8f0;
+  --dim: #6b6b80;
+  --figma: #1e1e1e;
+  --radius: 8px;
+  --radius-sm: 5px;
+  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  width: 320px;
+  min-height: 200px;
+  font-size: 13px;
+  line-height: 1.5;
+  padding-bottom: 8px;
+}
+
+/* ── Header ────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+.version {
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+/* ── Cards ─────────────────────────────────────────────── */
+.card {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.card h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  margin-bottom: 10px;
+}
+
+/* ── Buttons ────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, opacity 0.15s, transform 0.1s;
+  font-family: var(--font);
+  white-space: nowrap;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  width: 100%;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+.btn-primary:hover { background: var(--primary-hover); }
+
+.btn-secondary {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-secondary:hover { border-color: var(--primary); color: var(--primary); }
+
+.btn-success {
+  background: var(--success);
+  color: #fff;
+  width: 100%;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+.btn-success:hover { background: #16a34a; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--dim);
+  border-color: var(--border);
+}
+.btn-ghost:hover { color: var(--text); border-color: var(--dim); }
+
+.btn-figma {
+  background: #1e1e1e;
+  color: #fff;
+  border: 1px solid #444;
+  width: 100%;
+  justify-content: center;
+  margin-top: 8px;
+}
+.btn-figma:hover { background: #333; }
+
+.btn-small { font-size: 11px; padding: 4px 9px; margin-top: 6px; }
+
+/* ── Row layout ─────────────────────────────────────────── */
+.row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.row .btn { margin-bottom: 0; }
+.row input { flex: 1; }
+
+/* ── Input ──────────────────────────────────────────────── */
+input[type="text"] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  padding: 7px 10px;
+  font-family: monospace;
+  outline: none;
+  width: 100%;
+}
+input[type="text"]:focus { border-color: var(--primary); }
+input[type="text"]::placeholder { color: var(--dim); }
+
+/* ── Checkbox rows ──────────────────────────────────────── */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+}
+.checkbox-row:last-child { margin-bottom: 0; }
+.checkbox-row input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+}
+
+/* ── Info box ────────────────────────────────────────────── */
+.info-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 12px;
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  overflow: hidden;
+}
+.info-box .label { color: var(--dim); flex-shrink: 0; }
+.info-box code {
+  font-family: monospace;
+  color: var(--primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── SVG Preview ────────────────────────────────────────── */
+#preview-container {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  margin-bottom: 10px;
+  text-align: center;
+}
+#svg-preview {
+  max-height: 120px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#svg-preview svg {
+  max-width: 100%;
+  max-height: 110px;
+  border-radius: 3px;
+}
+.dim { color: var(--dim); font-size: 11px; margin-top: 5px; }
+
+/* ── Export buttons ─────────────────────────────────────── */
+.export-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Figma section ──────────────────────────────────────── */
+.figma-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.figma-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 6px;
+}
+.connected-badge {
+  font-size: 12px;
+  color: var(--success);
+}
+
+/* ── Banner ─────────────────────────────────────────────── */
+.banner {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.banner.success { background: rgba(34, 197, 94, 0.15); color: var(--success); border-bottom: 1px solid rgba(34,197,94,0.3); }
+.banner.error   { background: rgba(239, 68, 68, 0.15);  color: var(--danger);  border-bottom: 1px solid rgba(239,68,68,0.3); }
+.banner.info    { background: rgba(99, 102, 241, 0.15); color: var(--primary); border-bottom: 1px solid rgba(99,102,241,0.3); }
+.banner.picking { background: rgba(234, 179, 8, 0.15);  color: #fbbf24;        border-bottom: 1px solid rgba(234,179,8,0.3); }
+
+/* ── Progress bar ───────────────────────────────────────── */
+#progress-bar {
+  height: 3px;
+  background: var(--border);
+  position: relative;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  background: var(--primary);
+  width: 0%;
+  transition: width 0.3s;
+  animation: progress-indeterminate 1.2s infinite;
+}
+@keyframes progress-indeterminate {
+  0%   { transform: translateX(-100%); width: 60%; }
+  100% { transform: translateX(200%);  width: 60%; }
+}
+
+/* ── Divider label ──────────────────────────────────────── */
+.divider-label {
+  text-align: center;
+  font-size: 11px;
+  color: var(--dim);
+  margin: 6px 0 8px;
+}
+
+/* ── Utilities ──────────────────────────────────────────── */
+.hidden { display: none !important; }
+.btn-block { width: 100%; justify-content: center; margin-bottom: 8px; }

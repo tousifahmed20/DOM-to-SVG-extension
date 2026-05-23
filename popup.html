@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DOM → SVG Exporter</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- ── Header ───────────────────────────────────────── -->
+  <header>
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+        <rect x="1" y="1" width="20" height="20" rx="4" stroke="#6366f1" stroke-width="2"/>
+        <path d="M5 11 L9 15 L17 7" stroke="#6366f1" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>DOM → SVG</span>
+    </div>
+    <span class="version">v1.0</span>
+  </header>
+
+  <!-- ── Status Banner ────────────────────────────────── -->
+  <div id="status-banner" class="banner hidden"></div>
+
+  <!-- ── Step 1 : Capture ─────────────────────────────── -->
+  <section class="card" id="section-pick">
+    <h2>1 · Capture</h2>
+
+    <!-- PRIMARY ACTION -->
+    <button id="btn-fullpage" class="btn btn-primary">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M4 8h8M8 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      Capture Full Page
+    </button>
+
+    <div class="divider-label">— or capture a specific element —</div>
+
+    <!-- Element picker -->
+    <button id="btn-pick" class="btn btn-secondary btn-block"
+            title="Hover &amp; click any element on the page">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/>
+        <line x1="8" y1="1" x2="8" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="8" y1="12" x2="8" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="1" y1="8" x2="4" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="12" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      Activate Element Picker
+    </button>
+
+    <div class="row">
+      <input id="input-selector" type="text"
+             placeholder="Or paste a CSS selector / XPath…"
+             title="Examples:  .my-component   #main-nav   //div[@role='banner']" />
+      <button id="btn-selector" class="btn btn-secondary">Use</button>
+    </div>
+
+    <!-- Shows which element is currently targeted -->
+    <div id="selected-info" class="info-box hidden">
+      <span class="label">Selected:</span>
+      <code id="selected-tag"></code>
+    </div>
+  </section>
+
+  <!-- ── Step 2 : Options ──────────────────────────────── -->
+  <section class="card" id="section-options">
+    <h2>2 · Options</h2>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="opt-include-children" checked />
+      Include child elements
+    </label>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="opt-include-images" checked />
+      Embed images (Base64)
+    </label>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="opt-include-shadows" checked />
+      Render box-shadows &amp; filters
+    </label>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="opt-shadow-dom" checked />
+      Traverse Angular / Shadow DOM
+    </label>
+  </section>
+
+  <!-- ── Step 3 : Export ──────────────────────────────── -->
+  <section class="card" id="section-export">
+    <h2>3 · Export</h2>
+
+    <!-- SVG Preview thumbnail -->
+    <div id="preview-container" class="hidden">
+      <div id="svg-preview"></div>
+      <p id="preview-size" class="dim"></p>
+    </div>
+
+    <div class="export-buttons">
+      <button id="btn-generate" class="btn btn-primary" disabled>
+        Generate SVG
+      </button>
+      <button id="btn-download" class="btn btn-success hidden">
+        ↓ Download SVG
+      </button>
+      <button id="btn-copy-svg" class="btn btn-secondary hidden">
+        Copy SVG
+      </button>
+    </div>
+
+    <!-- Figma sub-section -->
+    <div class="figma-section">
+      <div class="figma-header">
+        <img id="figma-logo-img" src="icons/figma-logo.svg" width="14" height="14" alt="Figma" />
+        <span>Figma</span>
+      </div>
+
+      <div id="figma-not-connected">
+        <p class="dim">Connect your Figma account to paste SVG directly into a file.</p>
+        <button id="btn-figma-connect" class="btn btn-figma">
+          Connect Figma
+        </button>
+      </div>
+
+      <div id="figma-connected" class="hidden">
+        <p class="connected-badge">✓ Connected as <strong id="figma-user"></strong></p>
+        <button id="btn-figma-paste" class="btn btn-figma" disabled>
+          Open in Figma (paste-ready)
+        </button>
+        <button id="btn-figma-disconnect" class="btn btn-ghost btn-small">Disconnect</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Progress ─────────────────────────────────────── -->
+  <div id="progress-bar" class="hidden">
+    <div id="progress-fill"></div>
+  </div>
+
+  <script src="figma_uploader.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
