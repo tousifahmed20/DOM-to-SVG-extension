@@ -22,6 +22,7 @@
   let hoveredEl    = null;
   let highlightDiv = null;
   let tooltipDiv   = null;
+  let _svgInlineSeq = 0; // unique prefix for namespacing IDs inside inlined SVGs
 
   let areaSelectorActive = false;
   let areaStartX         = 0;
@@ -336,7 +337,7 @@
    * is ligature names or Unicode codepoints, not readable text.
    * These must be rasterized via canvas so the actual glyph is captured.
    */
-  const ICON_FONT_RE = /material.?icon|material.?symbol|font.?awesome|fontawesome|glyphicon|ionicon|feather|remixicon|lucide|bootstrap.?icon|themify|typicon/i;
+  const ICON_FONT_RE = /material.?icon|material.?symbol|google.?symbol|google.?icon|font.?awesome|fontawesome|glyphicon|ionicon|feather|remixicon|lucide|bootstrap.?icon|themify|typicon/i;
 
   function isIconFont(fontFamily) {
     return fontFamily ? ICON_FONT_RE.test(fontFamily) : false;
@@ -444,6 +445,86 @@
     return `<image href="${dataUrl}" x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}" preserveAspectRatio="xMidYMid meet"/>`;
   }
 
+  /**
+   * Renders a CSS mask-image icon to a canvas PNG by compositing the fill colour
+   * through the mask's alpha channel.  Returns a data URI.
+   *
+   * WHY: SVG <mask> elements are silently dropped by Figma's importer, so any
+   * icon that fails vector extraction would be invisible in Figma. A canvas PNG
+   * is universally supported.
+   *
+   * maskHref MUST be a data URI (already resolved by the service worker).
+   */
+  async function maskToColoredPng(maskHref, fillColor, w, h) {
+    const dpr = window.devicePixelRatio || 1;
+    const pw  = Math.max(Math.ceil(w * dpr), 1);
+    const ph  = Math.max(Math.ceil(h * dpr), 1);
+
+    const img = await new Promise((resolve, reject) => {
+      const i  = new Image();
+      i.onload  = () => resolve(i);
+      i.onerror = () => reject(new Error('mask img load failed'));
+      i.src = maskHref;
+    });
+
+    const cv  = document.createElement('canvas');
+    cv.width  = pw;
+    cv.height = ph;
+    const ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // 1. Fill with the target icon colour
+    ctx.fillStyle = fillColor;
+    ctx.fillRect(0, 0, w, h);
+
+    // 2. Use destination-in to clip the fill through the mask image alpha channel
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(img, 0, 0, w, h);
+
+    return cv.toDataURL('image/png');
+  }
+
+  /**
+   * Renders a CSS pseudo-element icon (::before / ::after) onto a canvas.
+   * Handles icon-font elements that are empty in the DOM but have their glyph
+   * set via CSS content (e.g. Angular Material's <i class="material-icons-extended">).
+   */
+  async function buildPseudoIconViaCanvas(layer) {
+    const { el, st, x, y, w, h } = layer;
+    if (w < 1 || h < 1) return '';
+
+    for (const pseudo of ['::before', '::after']) {
+      const ps  = window.getComputedStyle(el, pseudo);
+      const raw = ps.content;
+      if (!raw || raw === 'none' || raw === 'normal') continue;
+
+      // CSS content is a quoted string: '"notifications"' or '"\e7f4"'
+      const m        = raw.match(/^"([\s\S]*)"$/) || raw.match(/^'([\s\S]*)'$/);
+      const iconChar = m ? m[1] : '';
+      if (!iconChar) continue;
+
+      const ff    = (ps.fontFamily  || st.fontFamily  || 'sans-serif');
+      const fs    = ps.fontSize     || st.fontSize     || '24px';
+      const fw    = ps.fontWeight   || st.fontWeight   || '400';
+      const color = ps.color        || st.color        || '#000000';
+
+      const dpr = window.devicePixelRatio || 1;
+      const cv  = document.createElement('canvas');
+      cv.width  = Math.max(Math.ceil(w * dpr), 1);
+      cv.height = Math.max(Math.ceil(h * dpr), 1);
+      const ctx = cv.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.font         = `${fw} ${fs} ${ff}`;
+      ctx.fillStyle    = color;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(iconChar, w / 2, h / 2);
+      return `<image href="${cv.toDataURL('image/png')}" x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}" preserveAspectRatio="xMidYMid meet"/>`;
+    }
+
+    return '';
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // SECTION 5 — DOM layer collection
   //
@@ -466,7 +547,11 @@
       if (el === highlightDiv || el === tooltipDiv || el === areaOverlayDiv || el === areaRectDiv) return;
 
       const st = window.getComputedStyle(el);
-      if (st.display === 'none' || st.visibility === 'hidden') return;
+      if (st.display === 'none') return;  // display:none hides element and all descendants
+
+      // visibility:hidden hides this element but children can override with visibility:visible.
+      // Don't add this element to layers, but still walk children below.
+      const isVisHidden = st.visibility === 'hidden';
 
       const br  = el.getBoundingClientRect();
       const pos = st.position;
@@ -476,22 +561,40 @@
       const w   = br.width;
       const h   = br.height;
 
-      // Visually-hidden accessibility nodes (.sr-only, .visually-hidden, CDK overlay helpers)
-      // use the pattern: width/height ≤ 1px + overflow:hidden. Their text IS real TEXT_NODEs
-      // so buildText would capture them as floating text in the SVG — skip them entirely.
-      if (w <= 1 && h <= 1 && st.overflow === 'hidden') return;
-
       // Effective z: child z-index adds onto parent's effective z so that
       // z-index stacking contexts are respected in a simplified way.
-      const ownZ      = parseInt(st.zIndex); // NaN when 'auto'
+      const ownZ       = parseInt(st.zIndex); // NaN when 'auto'
       const effectiveZ = isNaN(ownZ) ? inheritedZ : inheritedZ + ownZ;
 
-      layers.push({ el, st, x, y, w, h, z: effectiveZ, dom: domIdx++, ox: originX, oy: originY });
+      if (!isVisHidden) {
+        // Visually-hidden accessibility nodes (.sr-only, .visually-hidden, CDK overlay helpers)
+        // use the pattern: width/height ≤ 1px + overflow:hidden. Their text IS real TEXT_NODEs
+        // so buildText would capture them as floating text in the SVG — skip them entirely.
+        const skipNode = (w <= 1 && h <= 1 && st.overflow === 'hidden');
 
-      // Skip walking children of leaf visual elements
-      const tag = el.tagName;
-      if (tag === 'IMG' || tag === 'SVG' || tag === 'CANVAS' ||
-          tag === 'VIDEO' || tag === 'INPUT' || tag === 'TEXTAREA') return;
+        // Skip browser-extension-injected overlays (ad blockers, dev tools, etc.).
+        // Extensions typically claim z-index near INT_MAX and are fixed direct children of <html>/<body>.
+        const rawZIdx = parseInt(st.zIndex);
+        const isExtOverlay = (!isNaN(rawZIdx) && rawZIdx >= 2000000 &&
+            (pos === 'fixed' || pos === 'absolute') &&
+            (el.parentElement === document.documentElement || el.parentElement === document.body));
+
+        const elId  = (el.id  || '').toLowerCase();
+        const elCls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+        const isExtClass = /\b(ubo-|ublock|adblock|abp-|adguard|ghostery)\b/.test(elId + ' ' + elCls);
+
+        if (!skipNode && !isExtOverlay && !isExtClass) {
+          layers.push({ el, st, x, y, w, h, z: effectiveZ, dom: domIdx++, ox: originX, oy: originY });
+        }
+      }
+
+      // Skip walking children of leaf visual elements.
+      // SVG elements in HTML documents return lowercase tagName ('svg', 'path', etc.)
+      // while HTML elements return uppercase ('IMG', 'CANVAS', etc.) — normalise before comparing.
+      const tag   = el.tagName;
+      const tagUC = tag.toUpperCase();
+      if (tagUC === 'IMG' || tagUC === 'SVG' || tagUC === 'CANVAS' ||
+          tagUC === 'VIDEO' || tagUC === 'INPUT' || tagUC === 'TEXTAREA') return;
 
       for (const child of el.children) walk(child, effectiveZ);
 
@@ -514,30 +617,125 @@
 
   async function buildBackground(layer, defs, ids, shadowAttr = '') {
     const { st, x, y, w, h } = layer;
-    const br   = parseBR(st, w, h);
-    const rxry = br ? ` rx="${br.rx}" ry="${br.ry}"` : '';
-    const out  = [];
-
+    const br      = parseBR(st, w, h);
+    const rxry    = br ? ` rx="${br.rx}" ry="${br.ry}"` : '';
     const bgColor = st.backgroundColor;
-    if (!isTransparent(bgColor)) {
+    const out     = [];
+
+    // ── CSS mask-image (Google icon pattern): background-color shown through an SVG mask shape ──
+    // Common in Google products: background-color sets the icon colour, mask-image clips it.
+    const maskImgCss   = st.maskImage || st.webkitMaskImage || '';
+    const maskUrlMatch = (maskImgCss && maskImgCss !== 'none')
+      ? maskImgCss.match(/url\(['"]?([^'")\s]+)['"]?\)/)
+      : null;
+
+    if (maskUrlMatch) {
+      let maskSrc;
+      try { maskSrc = new URL(maskUrlMatch[1], location.href).href; } catch { maskSrc = maskUrlMatch[1]; }
+      // data: URIs can be used directly; everything else goes through the background fetcher
+      const maskHref = maskSrc.startsWith('data:')
+        ? maskSrc
+        : await new Promise(resolve =>
+            chrome.runtime.sendMessage({ type: 'FETCH_IMAGE_AS_DATA_URI', url: maskSrc },
+              res => resolve(res?.dataURI || null)));
+      if (maskHref) {
+        const iconFill = !isTransparent(bgColor) ? bgColor : (st.color || '#000000');
+        let vectorized = false;
+
+        // Preferred path: extract vector shapes from SVG masks so the icon is editable in Figma.
+        // Figma cannot render SVG data URIs inside <image> elements or <mask> children.
+        if (maskHref.startsWith('data:image/svg+xml')) {
+          try {
+            const svgStr = maskHref.startsWith('data:image/svg+xml;base64,')
+              ? decodeURIComponent(escape(atob(maskHref.slice('data:image/svg+xml;base64,'.length))))
+              : decodeURIComponent(maskHref.slice(maskHref.indexOf(',') + 1));
+
+            const maskDoc  = new DOMParser().parseFromString(svgStr, 'image/svg+xml');
+            const maskRoot = maskDoc.documentElement;
+
+            // Compute scale from the mask SVG's coordinate space to our output space
+            let mvw = parseFloat(maskRoot.getAttribute('width'))  || w;
+            let mvh = parseFloat(maskRoot.getAttribute('height')) || h;
+            const mvb = maskRoot.getAttribute('viewBox');
+            if (mvb) {
+              const vbp = mvb.trim().split(/[\s,]+/).map(Number);
+              if (vbp.length >= 4 && vbp[2] > 0 && vbp[3] > 0) { mvw = vbp[2]; mvh = vbp[3]; }
+            }
+            const msx = mvw > 0 ? w / mvw : 1;
+            const msy = mvh > 0 ? h / mvh : 1;
+
+            const shapeSer = new XMLSerializer();
+            const shapes = Array.from(
+              maskRoot.querySelectorAll('path, circle, rect, ellipse, polygon, polyline, line')
+            ).filter(shape => {
+              // Skip shapes explicitly marked fill="none" — they are bounding-box helpers
+              // in icon SVGs (e.g. the transparent 24×24 background rect). If we filled them
+              // they would cover the entire icon area with a solid colour, hiding the shape.
+              return shape.getAttribute('fill') !== 'none';
+            }).map(shape => {
+              const c = shape.cloneNode(true);
+              c.setAttribute('fill', iconFill);
+              // Strip attributes that browsers handle but Figma silently ignores,
+              // which would make shapes invisible or incorrectly clipped in Figma.
+              for (const attr of ['stroke', 'class', 'clip-path', 'filter', 'mask']) {
+                c.removeAttribute(attr);
+              }
+              return shapeSer.serializeToString(c).replace(/ xmlns(?::[a-z]+)?="[^"]*"/g, '');
+            });
+
+            if (shapes.length) {
+              const mt = (msx !== 1 || msy !== 1)
+                ? `translate(${r(x)},${r(y)}) scale(${msx.toFixed(6)},${msy.toFixed(6)})`
+                : `translate(${r(x)},${r(y)})`;
+              out.push(`<g transform="${mt}">${shapes.join('')}</g>`);
+              vectorized = true;
+            }
+          } catch (_) { /* fall through to SVG mask fallback */ }
+        }
+
+        if (!vectorized) {
+          // Canvas PNG fallback — Figma supports <image> PNGs; SVG <mask> is silently dropped.
+          // maskHref is always a data URI here so canvas compositing is CORS-safe.
+          try {
+            const pngDataUri = await maskToColoredPng(maskHref, iconFill, w, h);
+            out.push(`<image href="${pngDataUri}" x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}" preserveAspectRatio="xMidYMid meet"/>`);
+          } catch (_) {
+            // Absolute last resort: SVG mask — renders in browsers only, invisible in Figma
+            const maskId = `m${ids.next()}`;
+            defs.push(
+              `<mask id="${maskId}" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" mask-type="alpha">` +
+              `<image href="${maskHref}" x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}" preserveAspectRatio="xMidYMid meet"/>` +
+              `</mask>`
+            );
+            out.push(`<rect x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}"${rxry} fill="${xe(iconFill)}" mask="url(#${maskId})"/>`);
+          }
+        }
+      } else if (!isTransparent(bgColor)) {
+        // Mask fetch failed — render plain background so at least the colour shows
+        out.push(`<rect x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}"${rxry} fill="${xe(bgColor)}"${shadowAttr}/>`);
+      }
+    } else if (!isTransparent(bgColor)) {
       out.push(`<rect x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}"${rxry} fill="${xe(bgColor)}"${shadowAttr}/>`);
     }
 
+    // ── background-image: gradient or url(...) ──────────────────────────────────────────────────
     const bgImg = st.backgroundImage;
     if (bgImg && bgImg !== 'none') {
       const grad = tryGradient(bgImg, x, y, w, h, defs, ids);
       if (grad) {
         out.push(grad);
       } else {
-        // background-image: url(...) — fetch and embed as <image>
         const urlMatch = bgImg.match(/url\(['"]?([^'")\s]+)['"]?\)/);
         if (urlMatch) {
           let src;
           try { src = new URL(urlMatch[1], location.href).href; } catch { src = urlMatch[1]; }
           const pAR = (st.backgroundSize || '').includes('cover') ? 'xMidYMid slice' : 'xMidYMid meet';
-          const href = await new Promise(resolve =>
-            chrome.runtime.sendMessage({ type: 'FETCH_IMAGE_AS_DATA_URI', url: src },
-              res => resolve(res?.dataURI || null)));
+          // data: URIs are already embeddable — no background round-trip needed
+          const href = src.startsWith('data:')
+            ? src
+            : await new Promise(resolve =>
+                chrome.runtime.sendMessage({ type: 'FETCH_IMAGE_AS_DATA_URI', url: src },
+                  res => resolve(res?.dataURI || null)));
           if (href) {
             if (br) {
               const clipId = `c${ids.next()}`;
@@ -659,27 +857,91 @@
 
   // ── Text ─────────────────────────────────────────────────────────
 
+  /**
+   * Returns one entry per visual line of a text node, with the viewport-coordinate
+   * position of each line.  Used to emit <tspan> elements for wrapped text.
+   *
+   * Fast path: if getClientRects() shows only one line we skip the character scan.
+   * Bail-out: text longer than 500 chars falls back to single-line (performance).
+   */
+  function getVisualLines(textNode) {
+    const text = textNode.textContent;
+    if (!text) return [];
+
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const allRects = Array.from(range.getClientRects());
+
+    // Count unique top values (within 2 px tolerance) to detect line count
+    const uniqueTops = [];
+    for (const rect of allRects) {
+      if (!uniqueTops.some(t => Math.abs(t - rect.top) < 2)) uniqueTops.push(rect.top);
+    }
+
+    if (uniqueTops.length <= 1 || text.length > 500) {
+      const br = range.getBoundingClientRect();
+      return [{ text, top: br.top, left: br.left, width: br.width }];
+    }
+
+    // Multiple lines — character scan to find break indices
+    const lines   = [];
+    let   start   = 0;
+    let   prevTop = null;
+    let   lineLeft = null;
+
+    for (let i = 0; i < text.length; i++) {
+      range.setStart(textNode, i);
+      range.setEnd(textNode, i + 1);
+      const rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue; // collapsed whitespace / \n
+
+      if (prevTop === null) {
+        prevTop  = rect.top;
+        lineLeft = rect.left;
+      } else if (rect.top > prevTop + 2) {
+        // Line break detected — record completed line
+        range.setStart(textNode, start);
+        range.setEnd(textNode, i);
+        const lineRect = range.getBoundingClientRect();
+        lines.push({ text: text.slice(start, i), top: prevTop, left: lineLeft, width: lineRect.width });
+        start    = i;
+        prevTop  = rect.top;
+        lineLeft = rect.left;
+      }
+    }
+
+    // Last (or only) line
+    range.setStart(textNode, start);
+    range.setEnd(textNode, text.length);
+    const lastRect = range.getBoundingClientRect();
+    lines.push({ text: text.slice(start), top: lastRect.top, left: lastRect.left, width: lastRect.width });
+
+    return lines;
+  }
+
   async function buildText(layer) {
     const { el, st, x, y, w, h, ox, oy } = layer;
     const nodes = Array.from(el.childNodes)
       .filter(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
-    if (!nodes.length) return '';
 
-    // Icon fonts: the text content is a ligature name (e.g. "expand_more") or a
-    // glyph codepoint — not real text. Rasterize via canvas so the actual icon
-    // glyph is captured (the page already has the font loaded).
     if (isIconFont(st.fontFamily)) {
-      return await buildIconViaCanvas(layer);
+      if (nodes.length || el.textContent?.trim()) {
+        return await buildIconViaCanvas(layer);
+      }
+      // Icon font element with no text — the glyph likely comes from a CSS pseudo-element.
+      return await buildPseudoIconViaCanvas(layer);
     }
 
-    let text = nodes.map(n => n.textContent.trim()).join(' ');
+    if (!nodes.length) return '';
 
-    // SVG renderers don't honour the CSS text-transform property on <text> elements,
-    // so we apply the transformation to the string itself before embedding.
+    // SVG renderers don't honour CSS text-transform — apply it to the string directly.
     const tt = st.textTransform;
-    if      (tt === 'uppercase')   text = text.toUpperCase();
-    else if (tt === 'lowercase')   text = text.toLowerCase();
-    else if (tt === 'capitalize')  text = text.replace(/\b\w/g, c => c.toUpperCase());
+    const applyTT = s => {
+      if (tt === 'uppercase')  return s.toUpperCase();
+      if (tt === 'lowercase')  return s.toLowerCase();
+      if (tt === 'capitalize') return s.replace(/\b\w/g, c => c.toUpperCase());
+      return s;
+    };
 
     const fs     = st.fontSize     || '14px';
     const ff     = (st.fontFamily  || 'sans-serif').replace(/"/g, "'");
@@ -691,41 +953,7 @@
     const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';
     const dAttr  = decor !== 'none' ? ` text-decoration="${xe(decor)}"` : '';
 
-    // Use the Range API to get the actual rendered bounding rect of the text
-    // node. This is far more accurate than estimating from padding + font-size,
-    // because it respects flexbox centering, line-height, transforms, etc.
-    let tx, ty;
-    try {
-      const range = document.createRange();
-      range.selectNode(nodes[0]);
-      const tr = range.getBoundingClientRect();
-      if (tr.width > 0 || tr.height > 0) {
-        const pos = st.position;
-        const vp  = pos === 'fixed' || pos === 'sticky';
-        const sx  = vp ? 0 : window.scrollX;
-        const sy  = vp ? 0 : window.scrollY;
-        const absL = tr.left + sx - ox;
-        const absT = tr.top  + sy - oy;
-        tx = align === 'center' ? r(absL + tr.width / 2)
-           : align === 'right'  ? r(absL + tr.width)
-           : r(absL);
-        ty = r(absT);
-      } else {
-        throw new Error('zero-size rect');
-      }
-    } catch (_) {
-      // Fallback: estimate from element bounds + padding
-      const padL = parseFloat(st.paddingLeft) || 0;
-      const padT = parseFloat(st.paddingTop)  || 0;
-      tx = align === 'center' ? r(x + w / 2) : align === 'right' ? r(x + w - padL) : r(x + padL);
-      ty = r(y + padT);
-    }
-
-    // Consolidate all typographic properties that have no SVG presentation-attribute
-    // equivalent (or where the CSS value must be verbatim) into a single style="".
-    // letter-spacing and word-spacing are CSS properties; font-variation-settings
-    // requires the quoted axis names which would otherwise corrupt SVG XML without
-    // the xe() escaping we apply here.
+    // Consolidate typographic CSS properties with no SVG attribute equivalent.
     const styleProps = [];
     const ls = st.letterSpacing;
     if (ls && ls !== 'normal') styleProps.push(`letter-spacing:${ls}`);
@@ -735,11 +963,72 @@
     if (fvs && fvs !== 'normal') styleProps.push(`font-variation-settings:${fvs}`);
     const styleAttr = styleProps.length ? ` style="${xe(styleProps.join(';'))}"` : '';
 
-    return (
-      `<text x="${tx}" y="${ty}" font-family="${xe(ff)}" font-size="${xe(fs)}" ` +
-      `font-weight="${fw}" font-style="${fi}" fill="${xe(color)}" ` +
-      `text-anchor="${anchor}" dominant-baseline="hanging"${dAttr}${styleAttr}>${xe(text)}</text>`
+    // fixed/sticky elements are already in viewport coords; others need scroll offset.
+    const pos = st.position;
+    const vp  = pos === 'fixed' || pos === 'sticky';
+    const sx  = vp ? 0 : window.scrollX;
+    const sy  = vp ? 0 : window.scrollY;
+
+    // Detect visual line breaks (CSS text wrapping) via the Range API.
+    // getVisualLines returns [{text, top, left, width}] in viewport coordinates.
+    const lines = getVisualLines(nodes[0]);
+
+    // Measure font ascent so we can express y as the alphabetic baseline.
+    // SVG text default is "alphabetic" baseline; Figma ignores dominant-baseline="hanging",
+    // so using hanging + visual-top y shifts text ~ascent pixels upward in Figma.
+    // Fix: drop dominant-baseline and offset y by the actual ascent.
+    const fsSz  = parseFloat(fs) || 14;
+    const _tCtx = document.createElement('canvas').getContext('2d');
+    _tCtx.font  = `${fw} ${fi} ${fsSz}px ${ff.split(',')[0].replace(/['"]/g, '').trim()}`;
+    const _tm   = _tCtx.measureText('Mg');
+    const ascent = _tm.fontBoundingBoxAscent ?? _tm.actualBoundingBoxAscent ?? fsSz * 0.8;
+
+    const textAttrs = (
+      `font-family="${xe(ff)}" font-size="${xe(fs)}" font-weight="${fw}" ` +
+      `font-style="${fi}" fill="${xe(color)}" text-anchor="${anchor}"` +
+      `${dAttr}${styleAttr}`
     );
+
+    if (lines.length <= 1) {
+      // Single line — use the Range bounding rect for accurate placement.
+      let tx, ty;
+      try {
+        const range = document.createRange();
+        range.selectNode(nodes[0]);
+        const tr = range.getBoundingClientRect();
+        if (tr.width > 0 || tr.height > 0) {
+          const absLx = tr.left + sx - ox;
+          const absT  = tr.top  + sy - oy;
+          tx = align === 'center' ? r(absLx + tr.width / 2)
+             : align === 'right'  ? r(absLx + tr.width)
+             : r(absLx);
+          ty = r(absT + ascent);
+        } else {
+          throw new Error('zero');
+        }
+      } catch (_) {
+        const padL = parseFloat(st.paddingLeft) || 0;
+        const padT = parseFloat(st.paddingTop)  || 0;
+        tx = align === 'center' ? r(x + w / 2) : align === 'right' ? r(x + w - padL) : r(x + padL);
+        ty = r(y + padT + ascent);
+      }
+      const singleText = applyTT(nodes[0].textContent.trim());
+      return `<text x="${tx}" y="${ty}" ${textAttrs}>${xe(singleText)}</text>`;
+    }
+
+    // Multi-line: emit one <tspan> per visual line with absolute x/y coordinates.
+    // Each tspan uses the actual rendered position of that line — no dy guessing.
+    const tspans = lines.map(line => {
+      const absLx = line.left + sx - ox;
+      const absT  = line.top  + sy - oy;
+      const lx = align === 'center' ? r(absLx + line.width / 2)
+               : align === 'right'  ? r(x + w)
+               : r(absLx);
+      const ly = r(absT + ascent);
+      return `<tspan x="${lx}" y="${ly}">${xe(applyTT(line.text))}</tspan>`;
+    });
+
+    return `<text ${textAttrs}>${tspans.join('')}</text>`;
   }
 
   // ── Input / textarea value ────────────────────────────────────────
@@ -788,18 +1077,79 @@
     return `<image href="${href}" x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}" preserveAspectRatio="xMidYMid meet"${alt}/>`;
   }
 
-  // ── Inline <svg> passthrough ──────────────────────────────────────
+  // ── Inline <svg> — emit vector <g> children (Figma-compatible) ────────
 
   function buildInlineSVG(layer) {
     const { el, x, y, w, h } = layer;
+    if (w <= 0 || h <= 0) return '';
     try {
-      const xml   = new XMLSerializer().serializeToString(el);
-      const bytes = new TextEncoder().encode(xml);
-      // Avoid spread-operator stack overflow on large SVGs by using a loop
-      let bin = '';
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      const enc = btoa(bin);
-      return `<image href="data:image/svg+xml;base64,${enc}" x="${r(x)}" y="${r(y)}" width="${r(w)}" height="${r(h)}"/>`;
+      // Resolve SVG coordinate space: viewBox takes priority over width/height attributes.
+      let vminX = 0, vminY = 0, vw = w, vh = h;
+      const vbAttr = el.getAttribute('viewBox');
+      if (vbAttr) {
+        const vbp = vbAttr.trim().split(/[\s,]+/).map(Number);
+        if (vbp.length >= 4 && vbp[2] > 0 && vbp[3] > 0) {
+          [vminX, vminY, vw, vh] = vbp;
+        }
+      } else {
+        const aw = parseFloat(el.getAttribute('width'));
+        const ah = parseFloat(el.getAttribute('height'));
+        if (aw > 0) vw = aw;
+        if (ah > 0) vh = ah;
+      }
+      const sx = vw > 0 ? w / vw : 1;
+      const sy = vh > 0 ? h / vh : 1;
+
+      // Clone and inline computed fill/stroke/opacity on every descendant.
+      // getComputedStyle resolves currentColor, CSS variables, and inheritance —
+      // these would all be lost if we serialised without inlining.
+      const clone    = el.cloneNode(true);
+      const origEls  = el.querySelectorAll('*');
+      const cloneEls = clone.querySelectorAll('*');
+      const rootColor = window.getComputedStyle(el).color;
+
+      for (let i = 0; i < origEls.length; i++) {
+        const cs = window.getComputedStyle(origEls[i]);
+        const fill          = cs.fill;
+        const stroke        = cs.stroke;
+        const fillOpacity   = cs.fillOpacity;
+        const strokeOpacity = cs.strokeOpacity;
+        const opacity       = cs.opacity;
+        if (fill)                                    cloneEls[i].setAttribute('fill',           fill);
+        if (stroke)                                  cloneEls[i].setAttribute('stroke',         stroke);
+        if (fillOpacity   && fillOpacity   !== '1') cloneEls[i].setAttribute('fill-opacity',   fillOpacity);
+        if (strokeOpacity && strokeOpacity !== '1') cloneEls[i].setAttribute('stroke-opacity', strokeOpacity);
+        if (opacity       && opacity       !== '1') cloneEls[i].setAttribute('opacity',         opacity);
+      }
+
+      // Unique prefix to namespace every ID in this SVG, preventing collisions
+      // when multiple SVGs appear in the same output document.
+      const uid  = `si${++_svgInlineSeq}`;
+      const ser  = new XMLSerializer();
+      const parts = [];
+
+      for (const child of clone.children) {
+        let xml = ser.serializeToString(child);
+        // Strip redundant namespace re-declarations that serialiser adds to child elements
+        xml = xml.replace(/ xmlns(?::[a-z]+)?="[^"]*"/g, '');
+        // Namespace IDs and all references to them
+        xml = xml
+          .replace(/\bid="([^"]+)"/g,    `id="${uid}-$1"`)
+          .replace(/href="#([^"]+)"/g,    `href="#${uid}-$1"`)
+          .replace(/url\(#([^)]+)\)/g,   `url(#${uid}-$1)`);
+        // Replace any remaining currentColor with the resolved colour
+        if (rootColor) xml = xml.replace(/\bcurrentColor\b/gi, rootColor);
+        parts.push(xml);
+      }
+
+      // Build the composite transform: position at (x,y) and scale from SVG space
+      const tx = r(x - vminX * sx);
+      const ty = r(y - vminY * sy);
+      const transform = (sx !== 1 || sy !== 1)
+        ? `translate(${tx},${ty}) scale(${sx.toFixed(6)},${sy.toFixed(6)})`
+        : `translate(${tx},${ty})`;
+
+      return `<g transform="${transform}">${parts.join('')}</g>`;
     } catch (_) { return ''; }
   }
 
@@ -911,7 +1261,7 @@
       pieces.push(buildBorder(layer));
 
       // Element-type-specific content
-      switch (layer.el.tagName) {
+      switch (layer.el.tagName.toUpperCase()) {
         case 'IMG':      pieces.push(await buildImg(layer));     break;
         case 'SVG':      pieces.push(buildInlineSVG(layer));     break;
         case 'CANVAS':   pieces.push(buildCanvas(layer));        break;
