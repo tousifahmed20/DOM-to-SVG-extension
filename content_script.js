@@ -477,9 +477,19 @@
     ctx.fillStyle = fillColor;
     ctx.fillRect(0, 0, w, h);
 
-    // 2. Use destination-in to clip the fill through the mask image alpha channel
+    // 2. Clip the fill through the mask image alpha channel
     ctx.globalCompositeOperation = 'destination-in';
     ctx.drawImage(img, 0, 0, w, h);
+
+    // 3. Safety check: if the canvas ended up fully transparent (fill colour had zero alpha
+    //    despite our guard, or the mask has no transparency), re-render the mask image
+    //    as-is so the icon is at least visible in its original colours.
+    const sample = ctx.getImageData(0, 0, Math.min(pw, 8), Math.min(ph, 8));
+    if (!sample.data.some((v, i) => i % 4 === 3 && v > 0)) {
+      ctx.clearRect(0, 0, pw, ph);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(img, 0, 0, w, h);
+    }
 
     return cv.toDataURL('image/png');
   }
@@ -639,7 +649,10 @@
             chrome.runtime.sendMessage({ type: 'FETCH_IMAGE_AS_DATA_URI', url: maskSrc },
               res => resolve(res?.dataURI || null)));
       if (maskHref) {
-        const iconFill = !isTransparent(bgColor) ? bgColor : (st.color || '#000000');
+        // Determine icon fill: prefer background-color (CSS mask pattern), fall back to text color.
+        // Must double-check the fallback — st.color can be 'rgba(0,0,0,0)' (truthy but transparent).
+        const rawFill   = !isTransparent(bgColor) ? bgColor : st.color;
+        const iconFill  = (!rawFill || isTransparent(rawFill)) ? '#000000' : rawFill;
         let vectorized = false;
 
         // Preferred path: extract vector shapes from SVG masks so the icon is editable in Figma.
@@ -668,16 +681,19 @@
             const shapes = Array.from(
               maskRoot.querySelectorAll('path, circle, rect, ellipse, polygon, polyline, line')
             ).filter(shape => {
-              // Skip shapes explicitly marked fill="none" — they are bounding-box helpers
-              // in icon SVGs (e.g. the transparent 24×24 background rect). If we filled them
-              // they would cover the entire icon area with a solid colour, hiding the shape.
-              return shape.getAttribute('fill') !== 'none';
+              // Skip fill="none" bounding-box helpers (e.g. the transparent 24×24 rect in
+              // Google icon SVGs) — filling them covers the entire icon area.
+              if (shape.getAttribute('fill') === 'none') return false;
+              // Skip shapes that are already invisible (zero opacity / fill-opacity).
+              if (shape.getAttribute('fill-opacity') === '0') return false;
+              if (parseFloat(shape.getAttribute('opacity') || '1') === 0) return false;
+              return true;
             }).map(shape => {
               const c = shape.cloneNode(true);
               c.setAttribute('fill', iconFill);
-              // Strip attributes that browsers handle but Figma silently ignores,
-              // which would make shapes invisible or incorrectly clipped in Figma.
-              for (const attr of ['stroke', 'class', 'clip-path', 'filter', 'mask']) {
+              c.setAttribute('fill-opacity', '1'); // reset; original value may be 0 or fractional
+              // Strip attributes Figma silently ignores, which can make shapes invisible.
+              for (const attr of ['stroke', 'stroke-width', 'class', 'clip-path', 'filter', 'mask', 'opacity']) {
                 c.removeAttribute(attr);
               }
               return shapeSer.serializeToString(c).replace(/ xmlns(?::[a-z]+)?="[^"]*"/g, '');
