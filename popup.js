@@ -7,9 +7,8 @@ document.getElementById('figma-logo-img')
   ?.addEventListener('error', e => { e.target.style.display = 'none'; });
 
 // ── DOM refs ─────────────────────────────────────────────────────
-const btnFullPage     = $('btn-fullpage');
 const btnViewport     = $('btn-viewport');
-const btnAreaSelect   = $('btn-area-select');
+const btnMarkExport   = $('btn-mark-export');
 const btnGenerate     = $('btn-generate');
 const btnDownload     = $('btn-download');
 const btnCopySvg      = $('btn-copy-svg');
@@ -40,16 +39,25 @@ let currentAreaSelection = null;   // { x, y, w, h } page-absolute coords — on
 // Init
 // ═══════════════════════════════════════════════════════════════
 (async function init() {
-  // Read pending area-selection state FIRST — before any async Figma check.
-  // If FigmaUploader.getConnectedUser() runs first it can block for several
-  // seconds while the service worker wakes up, leaving the button disabled.
-  chrome.storage.session.get(['areaSelection'], result => {
-    if (result.areaSelection) {
-      currentAreaSelection = result.areaSelection;
+  // Read pending state FIRST — before any async Figma check which can block for seconds.
+  chrome.storage.session.get(['pendingMarkedSVG', 'areaSelection'], sessionResult => {
+    if (sessionResult.pendingMarkedSVG) {
+      chrome.storage.session.remove(['pendingMarkedSVG']);
+      loadMarkedSVG(sessionResult.pendingMarkedSVG);
+    } else if (sessionResult.areaSelection) {
+      currentAreaSelection = sessionResult.areaSelection;
       chrome.storage.session.remove(['areaSelection']);
       const { w, h } = currentAreaSelection;
       setElementSelected('area', `${Math.round(w)} × ${Math.round(h)} px`, '__area__');
       setBanner('Area captured! Click "Generate SVG" to export.', 'success');
+    } else {
+      // Check local storage fallback (used when session quota was exceeded)
+      chrome.storage.local.get(['pendingMarkedSVGLocal'], localResult => {
+        if (localResult.pendingMarkedSVGLocal) {
+          chrome.storage.local.remove(['pendingMarkedSVGLocal']);
+          loadMarkedSVG(localResult.pendingMarkedSVGLocal);
+        }
+      });
     }
   });
 
@@ -58,25 +66,30 @@ let currentAreaSelection = null;   // { x, y, w, h } page-absolute coords — on
   if (user) setFigmaConnected(user);
 })();
 
+function loadMarkedSVG(svg) {
+  currentSVG = svg;
+  selectedTag.textContent = '✓ Marked export';
+  selectedInfo.classList.remove('hidden');
+  showPreview(currentSVG);
+  btnDownload.classList.remove('hidden');
+  btnCopySvg.classList.remove('hidden');
+  setBanner('Marked export ready — download or copy below.', 'success');
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Button Listeners
 // ═══════════════════════════════════════════════════════════════
-
-btnFullPage.addEventListener('click', async () => {
-  setElementSelected('html', 'Entire Page', '__fullpage__');
-  await generateSVG();
-});
 
 btnViewport.addEventListener('click', async () => {
   setElementSelected('viewport', 'Visible Screen', '__viewport__');
   await generateSVG();
 });
 
-// Closes popup so the user can draw a rectangle on the page.
-// The content script stores the area coords and sends REOPEN_POPUP when done.
-btnAreaSelect.addEventListener('click', async () => {
-  await sendToContentScript({ type: 'ACTIVATE_AREA_SELECTOR' });
-  setBanner('Draw a rectangle on the page… (Esc to cancel)', 'picking');
+// Closes popup so the user can mark elements on the page.
+// The content script stores the SVG and sends REOPEN_POPUP when export is done.
+btnMarkExport.addEventListener('click', async () => {
+  await sendToContentScript({ type: 'ACTIVATE_MARK_MODE' });
+  setBanner('Mark mode active — click elements to mark them, then click Export', 'picking');
   setTimeout(() => window.close(), 400);
 });
 
@@ -130,14 +143,9 @@ async function generateSVG() {
   };
 
   showProgress();
-  setBanner(
-    currentSelector === '__fullpage__'
-      ? 'Capturing entire page — may take a few seconds…'
-      : 'Generating SVG…',
-    'info'
-  );
+  setBanner('Generating SVG…', 'info');
   btnGenerate.disabled = true;
-  btnFullPage.disabled = true;
+  btnViewport.disabled = true;
   currentSVG = null;
 
   try {
@@ -169,7 +177,7 @@ async function generateSVG() {
   } finally {
     hideProgress();
     btnGenerate.disabled = false;
-    btnFullPage.disabled = false;
+    btnViewport.disabled = false;
   }
 }
 
@@ -209,6 +217,7 @@ function setFigmaConnected(user) {
   figmaUserEl.textContent = user.handle || user.email || 'user';
   figmaConnected.classList.remove('hidden');
   figmaNotConn.classList.add('hidden');
+  if (currentSVG) btnFigmaPaste.disabled = false;
 }
 
 function showPreview(svgString) {

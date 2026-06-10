@@ -254,6 +254,440 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // SECTION 2c — Mark Mode  (Redact / Delete / Swap)
+  // ═══════════════════════════════════════════════════════════════
+
+  let markModeActive  = false;
+  let currentMarkType = 'redact'; // 'redact' | 'delete' | 'swap'
+  let markToolbar     = null;
+  let markHoverDiv    = null;
+  let markOverlays    = new Map(); // DOM element → { type, overlayDiv }
+
+  const MARK_COLORS = {
+    redact: { bg: 'rgba(0,0,0,0.5)',         border: '#000000', hoverBg: 'rgba(0,0,0,0.12)',     text: '#fff'    },
+    delete: { bg: 'rgba(239,68,68,0.28)',    border: '#ef4444', hoverBg: 'rgba(239,68,68,0.12)', text: '#ef4444' },
+    swap:   { bg: 'rgba(251,191,36,0.28)',   border: '#fbbf24', hoverBg: 'rgba(251,191,36,0.12)',text: '#fbbf24' },
+  };
+
+  function activateMarkMode() {
+    if (markModeActive) return;
+    markModeActive  = true;
+    currentMarkType = 'redact';
+    markOverlays.clear();
+
+    // ── Toolbar ─────────────────────────────────────────────────
+    markToolbar = document.createElement('div');
+    markToolbar.setAttribute('data-ditto', 'toolbar');
+    Object.assign(markToolbar.style, {
+      position:     'fixed',
+      top:          '0',
+      left:         '0',
+      right:        '0',
+      zIndex:       '2147483647',
+      background:   '#1a1a1f',
+      borderBottom: '1px solid #2a2a35',
+      padding:      '7px 14px',
+      display:      'flex',
+      alignItems:   'center',
+      gap:          '6px',
+      fontFamily:   'system-ui,-apple-system,sans-serif',
+      fontSize:     '12px',
+      fontWeight:   '500',
+      color:        '#e8e8f0',
+      boxShadow:    '0 2px 16px rgba(0,0,0,0.5)',
+      boxSizing:    'border-box',
+    });
+
+    const modeLabel = document.createElement('span');
+    modeLabel.textContent = 'Mark';
+    Object.assign(modeLabel.style, {
+      fontSize:      '10px',
+      fontWeight:    '700',
+      textTransform: 'uppercase',
+      letterSpacing: '0.08em',
+      color:         '#6b6b80',
+      marginRight:   '4px',
+      fontFamily:    'inherit',
+    });
+    markToolbar.appendChild(modeLabel);
+
+    const typeData = [
+      { type: 'redact', icon: '◼', label: 'Redact', color: '#e8e8f0', borderColor: '#555' },
+      { type: 'delete', icon: '✕', label: 'Delete', color: '#ef4444', borderColor: '#ef4444' },
+      { type: 'swap',   icon: '⇄', label: 'Swap',   color: '#fbbf24', borderColor: '#fbbf24' },
+    ];
+    for (const td of typeData) {
+      const btn = document.createElement('button');
+      btn.dataset.markType = td.type;
+      btn.textContent      = `${td.icon} ${td.label}`;
+      Object.assign(btn.style, {
+        padding:      '4px 10px',
+        borderRadius: '4px',
+        border:       `1.5px solid ${td.borderColor}`,
+        background:   'transparent',
+        color:        td.color,
+        cursor:       'pointer',
+        fontSize:     '11px',
+        fontWeight:   '600',
+        fontFamily:   'system-ui,-apple-system,sans-serif',
+        opacity:      '0.5',
+        transition:   'opacity 0.1s,transform 0.1s',
+      });
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        currentMarkType = td.type;
+        updateMarkToolbarState();
+      });
+      markToolbar.appendChild(btn);
+    }
+
+    const spacer = document.createElement('span');
+    spacer.style.flex = '1';
+    markToolbar.appendChild(spacer);
+
+    const btnClear = document.createElement('button');
+    btnClear.textContent = 'Clear';
+    Object.assign(btnClear.style, {
+      padding:      '4px 10px',
+      borderRadius: '4px',
+      border:       '1px solid #2a2a35',
+      background:   'transparent',
+      color:        '#6b6b80',
+      cursor:       'pointer',
+      fontSize:     '11px',
+      fontFamily:   'system-ui,-apple-system,sans-serif',
+    });
+    btnClear.addEventListener('click', e => {
+      e.stopPropagation();
+      for (const { overlayDiv } of markOverlays.values()) overlayDiv.remove();
+      markOverlays.clear();
+    });
+    markToolbar.appendChild(btnClear);
+
+    const btnExport = document.createElement('button');
+    btnExport.textContent = 'Export →';
+    Object.assign(btnExport.style, {
+      padding:      '5px 13px',
+      borderRadius: '4px',
+      border:       'none',
+      background:   '#6366f1',
+      color:        '#fff',
+      cursor:       'pointer',
+      fontSize:     '12px',
+      fontWeight:   '600',
+      fontFamily:   'system-ui,-apple-system,sans-serif',
+    });
+    btnExport.addEventListener('click', e => {
+      e.stopPropagation();
+      exportWithMarks();
+    });
+    markToolbar.appendChild(btnExport);
+
+    const btnCancel = document.createElement('button');
+    btnCancel.textContent = '✕';
+    Object.assign(btnCancel.style, {
+      padding:    '4px 9px',
+      borderRadius: '4px',
+      border:     '1px solid #2a2a35',
+      background: 'transparent',
+      color:      '#6b6b80',
+      cursor:     'pointer',
+      fontSize:   '11px',
+      fontFamily: 'system-ui,-apple-system,sans-serif',
+      marginLeft: '2px',
+    });
+    btnCancel.addEventListener('click', e => {
+      e.stopPropagation();
+      deactivateMarkMode(false);
+    });
+    markToolbar.appendChild(btnCancel);
+
+    document.documentElement.appendChild(markToolbar);
+
+    // ── Hover highlight ──────────────────────────────────────────
+    markHoverDiv = document.createElement('div');
+    markHoverDiv.setAttribute('data-ditto', 'hover');
+    Object.assign(markHoverDiv.style, {
+      position:      'fixed',
+      zIndex:        '2147483646',
+      pointerEvents: 'none',
+      borderRadius:  '2px',
+      display:       'none',
+      boxSizing:     'border-box',
+    });
+    document.documentElement.appendChild(markHoverDiv);
+
+    document.addEventListener('mousemove', onMarkHover, true);
+    document.addEventListener('click',     onMarkClick, true);
+    document.addEventListener('keydown',   onMarkKey,   true);
+    document.addEventListener('scroll',    onMarkScroll, { capture: true, passive: true });
+
+    updateMarkToolbarState();
+  }
+
+  function deactivateMarkMode(keepMarks = false) {
+    if (!markModeActive) return;
+    markModeActive = false;
+
+    document.removeEventListener('mousemove', onMarkHover, true);
+    document.removeEventListener('click',     onMarkClick, true);
+    document.removeEventListener('keydown',   onMarkKey,   true);
+    document.removeEventListener('scroll',    onMarkScroll, { capture: true, passive: true });
+
+    markToolbar?.remove();   markToolbar  = null;
+    markHoverDiv?.remove();  markHoverDiv = null;
+
+    // Always remove visual overlays (they must not appear in captured SVG)
+    for (const { overlayDiv } of markOverlays.values()) overlayDiv.remove();
+    if (!keepMarks) markOverlays.clear();
+  }
+
+  function updateMarkToolbarState() {
+    if (!markToolbar) return;
+    markToolbar.querySelectorAll('[data-mark-type]').forEach(btn => {
+      const active = btn.dataset.markType === currentMarkType;
+      btn.style.opacity   = active ? '1' : '0.45';
+      btn.style.transform = active ? 'scale(1.05)' : 'scale(1)';
+    });
+    if (markHoverDiv) {
+      const c = MARK_COLORS[currentMarkType];
+      markHoverDiv.style.border     = `2px solid ${c.border}`;
+      markHoverDiv.style.background = c.hoverBg;
+    }
+  }
+
+  function onMarkHover(e) {
+    if (!markHoverDiv) return;
+    if (markToolbar?.contains(e.target)) {
+      markHoverDiv.style.display = 'none';
+      return;
+    }
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || markToolbar?.contains(el) || el.getAttribute('data-ditto')) {
+      markHoverDiv.style.display = 'none';
+      return;
+    }
+    if (el.tagName === 'HTML' || el.tagName === 'BODY') {
+      markHoverDiv.style.display = 'none';
+      return;
+    }
+    const br = el.getBoundingClientRect();
+    const c  = MARK_COLORS[currentMarkType];
+    Object.assign(markHoverDiv.style, {
+      display:    'block',
+      top:        `${br.top}px`,
+      left:       `${br.left}px`,
+      width:      `${br.width}px`,
+      height:     `${br.height}px`,
+      border:     `2px solid ${c.border}`,
+      background: c.hoverBg,
+    });
+  }
+
+  function onMarkClick(e) {
+    if (markToolbar?.contains(e.target)) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || markToolbar?.contains(el) || el.getAttribute('data-ditto')) return;
+    if (el.tagName === 'HTML' || el.tagName === 'BODY') return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Clicking an already-marked element with the same type → unmark
+    if (markOverlays.has(el)) {
+      const existing = markOverlays.get(el);
+      existing.overlayDiv.remove();
+      markOverlays.delete(el);
+      if (existing.type === currentMarkType) return;
+    }
+
+    // Apply mark
+    const br = el.getBoundingClientRect();
+    const c  = MARK_COLORS[currentMarkType];
+
+    const overlayDiv = document.createElement('div');
+    overlayDiv.setAttribute('data-ditto', 'mark');
+    Object.assign(overlayDiv.style, {
+      position:      'fixed',
+      top:           `${br.top}px`,
+      left:          `${br.left}px`,
+      width:         `${br.width}px`,
+      height:        `${br.height}px`,
+      zIndex:        '2147483645',
+      pointerEvents: 'none',
+      background:    c.bg,
+      border:        `2px solid ${c.border}`,
+      borderRadius:  '2px',
+      boxSizing:     'border-box',
+    });
+
+    if (currentMarkType === 'swap') {
+      const badge = document.createElement('span');
+      badge.textContent = '[redacted]';
+      Object.assign(badge.style, {
+        position:    'absolute',
+        top:         '50%',
+        left:        '50%',
+        transform:   'translate(-50%,-50%)',
+        color:       c.text,
+        fontSize:    '10px',
+        fontWeight:  '700',
+        fontFamily:  'monospace,system-ui',
+        pointerEvents: 'none',
+        whiteSpace:  'nowrap',
+      });
+      overlayDiv.appendChild(badge);
+    } else if (currentMarkType === 'delete') {
+      const badge = document.createElement('span');
+      badge.textContent = 'Delete';
+      Object.assign(badge.style, {
+        position:    'absolute',
+        top:         '2px',
+        right:       '4px',
+        color:       c.text,
+        fontSize:    '9px',
+        fontWeight:  '700',
+        fontFamily:  'system-ui,-apple-system,sans-serif',
+        opacity:     '0.8',
+        pointerEvents: 'none',
+      });
+      overlayDiv.appendChild(badge);
+    }
+
+    document.documentElement.appendChild(overlayDiv);
+    markOverlays.set(el, { type: currentMarkType, overlayDiv });
+  }
+
+  function onMarkScroll() {
+    for (const [el, { overlayDiv }] of markOverlays) {
+      const br = el.getBoundingClientRect();
+      Object.assign(overlayDiv.style, { top: `${br.top}px`, left: `${br.left}px` });
+    }
+  }
+
+  function onMarkKey(e) {
+    if (e.key === 'Escape') deactivateMarkMode(false);
+  }
+
+  async function exportWithMarks() {
+    // Snapshot bounding rects for Redact elements before removing toolbar
+    const redactRects = [];
+    for (const [el, { type }] of markOverlays) {
+      if (type === 'redact') {
+        const br = el.getBoundingClientRect();
+        redactRects.push({ x: r(br.left), y: r(br.top), w: r(br.width), h: r(br.height) });
+      }
+    }
+
+    // Tear down UI (overlays, toolbar, hover) — keeps markOverlays map intact
+    deactivateMarkMode(true);
+
+    const deleteSet = new Set();
+    const swapMap   = new Map();
+    for (const [el, { type }] of markOverlays) {
+      if (type === 'delete') deleteSet.add(el);
+      if (type === 'swap')   swapMap.set(el, el.textContent);
+    }
+
+    // Apply text swaps before capture
+    for (const [el] of swapMap) el.textContent = '[redacted]';
+
+    const toast = showMarkToast('Generating SVG…', '#6366f1', 0);
+
+    try {
+      const svg = await generateSVG(document.documentElement, {
+        includeChildren:  true,
+        includeImages:    true,
+        includeShadows:   true,
+        shadowDOM:        true,
+        captureMode:      'viewport',
+        excludedElements: deleteSet,
+      });
+
+      if (!svg || svg.trim() === '') {
+        throw new Error('SVG generation returned empty — try a different page or area');
+      }
+
+      const finalSvg = injectRedactRects(svg, redactRects);
+
+      // Promisified write — checks lastError; falls back to local if session quota is exceeded.
+      await storeSVGForPopup(finalSvg);
+
+      toast.remove();
+      showMarkToast('✓ SVG ready — click the Ditto icon to review and download', '#22c55e', 8000);
+      chrome.runtime.sendMessage({ type: 'REOPEN_POPUP' });
+
+    } catch (err) {
+      toast.remove();
+      showMarkToast(`Export failed: ${err.message}`, '#ef4444', 6000);
+    } finally {
+      // Restore swapped text
+      for (const [el, original] of swapMap) el.textContent = original;
+      markOverlays.clear();
+    }
+  }
+
+  function injectRedactRects(svgString, rects) {
+    if (!rects.length) return svgString;
+    const rectTags = rects
+      .map(({ x, y, w, h }) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#000000"/>`)
+      .join('\n');
+    return svgString.replace(/<\/svg>\s*$/, `\n${rectTags}\n</svg>`);
+  }
+
+  // Writes the SVG to session storage; falls back to local storage if session quota is exceeded.
+  function storeSVGForPopup(svgString) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.session.set({ pendingMarkedSVG: svgString }, () => {
+        if (!chrome.runtime.lastError) { resolve(); return; }
+        // Session quota hit — try local storage instead.
+        chrome.storage.local.set({ pendingMarkedSVGLocal: svgString }, () => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(`Storage full: ${chrome.runtime.lastError.message}`));
+          } else {
+            resolve();
+          }
+        });
+      });
+    });
+  }
+
+  function showMarkToast(text, bgColor, duration = 3500) {
+    const existing = document.getElementById('__ditto_toast__');
+    if (existing) existing.remove();
+    const toast = document.createElement('div');
+    toast.id = '__ditto_toast__';
+    Object.assign(toast.style, {
+      position:      'fixed',
+      bottom:        '20px',
+      right:         '20px',
+      zIndex:        '2147483647',
+      background:    bgColor,
+      color:         '#fff',
+      padding:       '10px 16px',
+      borderRadius:  '8px',
+      fontFamily:    'system-ui,-apple-system,sans-serif',
+      fontSize:      '13px',
+      fontWeight:    '500',
+      boxShadow:     '0 4px 16px rgba(0,0,0,0.4)',
+      opacity:       '1',
+      transition:    'opacity 0.4s',
+      pointerEvents: 'none',
+      lineHeight:    '1.4',
+      maxWidth:      '280px',
+    });
+    toast.textContent = text;
+    document.documentElement.appendChild(toast);
+    if (duration > 0) {
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 400);
+      }, duration);
+    }
+    return toast;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // SECTION 3 — Stable Selector (Angular-aware)
   // ═══════════════════════════════════════════════════════════════
 
@@ -555,6 +989,7 @@
     (function walk(el, inheritedZ) {
       if (!el || el.nodeType !== Node.ELEMENT_NODE) return;
       if (el === highlightDiv || el === tooltipDiv || el === areaOverlayDiv || el === areaRectDiv) return;
+      if (opts.excludedElements?.has(el)) return;
 
       const st = window.getComputedStyle(el);
       if (st.display === 'none') return;  // display:none hides element and all descendants
@@ -1326,6 +1761,11 @@
 
       case 'ACTIVATE_AREA_SELECTOR':
         activateAreaSelector();
+        sendResponse({ ok: true });
+        break;
+
+      case 'ACTIVATE_MARK_MODE':
+        activateMarkMode();
         sendResponse({ ok: true });
         break;
 

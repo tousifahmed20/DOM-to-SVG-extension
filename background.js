@@ -75,9 +75,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
  */
 async function fetchImageAsDataURI(url) {
   try {
+    // data: URIs are already embeddable — return them directly without a network round-trip
+    // (fetch('data:...') throws in service workers in most browsers)
+    if (url.startsWith('data:')) return { dataURI: url };
+
     // Validate URL to avoid fetching arbitrary internal resources
     const parsed = new URL(url);
-    if (!['http:', 'https:', 'data:'].includes(parsed.protocol)) {
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
       return { dataURI: null, error: 'Unsupported protocol' };
     }
 

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "DOM to SVG Exporter",
+  "name": "Ditto",
   "version": "1.0.0",
   "description": "Capture any UI element on a webpage and export it as SVG or send to Figma",
 
